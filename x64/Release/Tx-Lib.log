@@ -1,0 +1,9 @@
+﻿  base.c
+C:\Sorting\event-lib\base.c(78,19): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+C:\Sorting\event-lib\base.c(159,9): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+C:\Sorting\event-lib\base.c(244,47): warning C4244: “=”: 从“int64_t”转换到“long”，可能丢失数据
+C:\Sorting\event-lib\base.c(248,32): warning C4244: “=”: 从“time_t”转换到“long”，可能丢失数据
+C:\Sorting\event-lib\base.c(729,2): warning C4996: 'wcscat': This function or variable may be unsafe. Consider using wcscat_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+C:\Sorting\event-lib\base.c(730,2): warning C4996: 'wcscat': This function or variable may be unsafe. Consider using wcscat_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+  win32select.c
+  Tx-Lib.vcxproj -> C:\Sorting\event-lib\x64\Release\Tx-Lib.lib
