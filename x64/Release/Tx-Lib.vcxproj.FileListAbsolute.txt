@@ -1,2 +1,0 @@
-C:\Sorting\Tx-Lib\x64\Release\Tx-Lib.lib
-C:\Sorting\event-lib\x64\Release\Tx-Lib.lib

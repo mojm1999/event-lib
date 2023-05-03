@@ -1,1 +1,0 @@
-C:\Sorting\Tx-Lib\x64\Debug\Tx-Lib.lib
