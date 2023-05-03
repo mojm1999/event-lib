@@ -1,3 +1,0 @@
-C:\Sorting\Tx-Lib\Test\x64\Debug\Test.exe
-C:\Sorting\event-lib\Test\x64\Debug\Test.exe
-D:\repositories\event-lib\Test\x64\Debug\Test.exe
