@@ -25,24 +25,32 @@ extern "C" {
 
 #define EVENT_MAX_PRIORITIES 256
 
+#define EVLIST_TIMEOUT	    0x01
+#define EVLIST_INSERTED	    0x02
 #define EVLIST_ACTIVE	    0x08
 #define EVLIST_INTERNAL	    0x10
 #define EVLIST_ACTIVE_LATER 0x20
 #define EVLIST_FINALIZING   0x40
 #define EVLIST_INIT			0x80
 
+#define EVLIST_ALL          0xff
+
 /*
  * Tail queue definitions
  */
 #define TAILQ_HEAD(name, type)			\
 struct name	{						\
-	struct type *tqh_first;					\
-	struct type **tqh_last;				\
+	struct type *tqh_first;	/* 指向第一个元素 */		\
+	struct type **tqh_last;	/* 指向最后元素的next指针 */		\
 }
+
+#define TAILQ_HEAD_INITIALIZER(head)			\
+	{ NULL, &(head).tqh_first }
+
 #define TAILQ_ENTRY(type)			\
 struct {						\
-	struct type *tqe_next;					\
-	struct type **tqe_prev;				\
+	struct type *tqe_next; /* 指向下一个元素*/	\
+	struct type **tqe_prev;	/* 指向上一个元素的next指针 */	\
 }
 
 /*
@@ -51,6 +59,14 @@ struct {						\
 #define TAILQ_FIRST(head)			((head)->tqh_first)
 #define TAILQ_END(head)				NULL
 #define TAILQ_NEXT(elm, field)		((elm)->field.tqe_next)
+#define	TAILQ_EMPTY(head)						\
+	(TAILQ_FIRST(head) == TAILQ_END(head))
+
+#define TAILQ_LAST(head, headname)			\
+	(*(((struct headname *)((head)->tqh_last))->tqh_last))
+
+#define TAILQ_PREV(elm, headname, field)				\
+	(*(((struct headname *)((elm)->field.tqe_prev))->tqh_last))
 
 #define TAILQ_FOREACH(var, head, field)			\
 for ((var) = TAILQ_FIRST(head);				\
@@ -66,14 +82,14 @@ do {							\
 	(head)->tqh_last = &(head)->tqh_first;		\
 } while (0)
 
-#define TAILQ_REMOVE(head, elm, field)				\
-do {										\
-	if (((elm)->field.tqe_next) != NULL)				\
-		(elm)->field.tqe_next->field.tqe_prev =			\
-			(elm)->field.tqe_prev;				\
+#define TAILQ_INSERT_HEAD(head, elm, field) do {			\
+	if (((elm)->field.tqe_next = (head)->tqh_first) != NULL)	\
+		(head)->tqh_first->field.tqe_prev =			\
+		    &(elm)->field.tqe_next;				\
 	else								\
-		(head)->tqh_last = (elm)->field.tqe_prev;		\
-	*(elm)->field.tqe_prev = (elm)->field.tqe_next;			\
+		(head)->tqh_last = &(elm)->field.tqe_next;		\
+	(head)->tqh_first = (elm);					\
+	(elm)->field.tqe_prev = &(head)->tqh_first;			\
 } while (0)
 
 #define TAILQ_INSERT_TAIL(head, elm, field)				\
@@ -82,6 +98,16 @@ do {										\
 	(elm)->field.tqe_prev = (head)->tqh_last;			\
 	*(head)->tqh_last = (elm);					\
 	(head)->tqh_last = &(elm)->field.tqe_next;			\
+} while (0)
+
+#define TAILQ_REMOVE(head, elm, field)				\
+do {										\
+	if (((elm)->field.tqe_next) != NULL)				\
+		(elm)->field.tqe_next->field.tqe_prev =			\
+			(elm)->field.tqe_prev;				\
+	else								\
+		(head)->tqh_last = (elm)->field.tqe_prev;		\
+	*(elm)->field.tqe_prev = (elm)->field.tqe_next;			\
 } while (0)
 
 /*
@@ -98,7 +124,7 @@ struct {					\
 }
 
 /*
-* List access methods
+* list access methods
 */
 #define	LIST_FIRST(head)		((head)->lh_first)
 #define	LIST_END(head)			NULL
@@ -109,8 +135,9 @@ for((var) = LIST_FIRST(head);					\
 	(var)!= LIST_END(head);					\
 	(var) = LIST_NEXT(var, field))
 
-
-
+/*
+* Timeval definitions
+*/
 #define evutil_timeradd(tvp, uvp, vvp)			\
 do {								\
 	(vvp)->tv_sec = (tvp)->tv_sec + (uvp)->tv_sec;		\
@@ -137,6 +164,9 @@ do {								\
 ((tvp)->tv_sec cmp (uvp)->tv_sec))
 
 #define	evutil_timerclear(tvp)	(tvp)->tv_sec = (tvp)->tv_usec = 0
+
+/** 设置时间事件 */
+#define evtimer_set(ev, cb, arg)	event_assign((ev), -1, 0, (cb), (arg))
 
 
 enum event_method_feature {
@@ -198,16 +228,16 @@ struct event_changelist {
 
 struct event_callback {
 	TAILQ_ENTRY(event_callback) evcb_active_next;
-	short evcb_flags;
-	uint8_t evcb_pri;
-	uint8_t evcb_closure;
+	short evcb_flags;	/** 状态标记 EVLIST_ACTIVE */
+	uint8_t evcb_pri;	/** 优先级 */
+	uint8_t evcb_closure;	/** 关闭行为 */
 	union {
-		void (*evcb_callback)(evutil_socket_t, short, void *);
+		void (*evcb_callback)(evutil_socket_t, short, void *);	/** 事件触发时回调 */
 		void (*evcb_selfcb)(struct event_callback *, void*);
 		void (*evcb_evfinalize)(struct event *, void *);
 		void (*evcb_cbfinalize)(struct event_callback *, void *);
 	} evcb_cb_union;
-	void *evcb_arg;
+	void *evcb_arg;	/** 回调传入参数 */
 };
 
 #define EV_CLOSURE_EVENT 0
@@ -218,9 +248,9 @@ struct event_callback {
 TAILQ_HEAD(evcallback_list, event_callback);
 
 struct event {
-	evutil_socket_t ev_fd;
-	struct event_base *ev_base;
-	struct event_callback ev_evcallback;
+	evutil_socket_t ev_fd;	/** 文件描述符 */
+	struct event_base *ev_base;	/** 绑定到event_base */
+	struct event_callback ev_evcallback; /** 回调结构体 */
 	union {
 		TAILQ_ENTRY(event) ev_next_with_common_timeout;
 		int min_heap_idx;
@@ -236,9 +266,9 @@ struct event {
 			short *ev_pncalls;
 		} ev_signal;
 	} ev_;
-	short ev_events;
-	short ev_res;
-	struct timeval ev_timeout;
+	short ev_events;	/** 事件类型 EV_READ */
+	short ev_res;		/** 结果类型 EV_TIMEOUT */
+	struct timeval ev_timeout;	/** 超时时间 */
 };
 
 #define ev_callback ev_evcallback.evcb_cb_union.evcb_callback
@@ -270,6 +300,7 @@ struct evsig_info {
 	int sh_old_max;
 };
 
+#define EV_TIMEOUT	0x01
 #define EV_READ		0x02
 #define EV_WRITE	0x04
 #define EV_SIGNAL	0x08
@@ -301,6 +332,8 @@ struct event_map_entry {
 HT_HEAD(event_io_map, event_map_entry);
 
 void evmap_io_initmap_(struct event_io_map *ctx);
+int evmap_io_add_(struct evnt_base *base, evutil_socket_t fd, struct event *ev);
+
 void evmap_signal_initmap_(struct event_signal_map *ctx);
 void evmap_signal_active_(struct event_base* base, evutil_socket_t signum, int ncalls);
 
@@ -320,17 +353,22 @@ typedef void (WINAPI *GetSystemTimePreciseAsFileTime_fn_t) (LPFILETIME);
 struct evutil_monotonic_timer {
 
 #ifdef _WIN32
+	/** 系统启动至今的毫秒数 */
 	ev_GetTickCount_func GetTickCount64_fn;
 	ev_GetTickCount_func GetTickCount_fn;
+	/** 定时器 初始化时的毫秒数 */
 	uint64_t first_tick;
-	uint64_t first_counter;
 	uint64_t last_tick_count;
+	/** 精准计数 初始化计数值 */
+	uint64_t first_counter;
 	uint64_t adjust_tick_count;
+	/** 精准计数 计数间隔 微妙us */
 	double usec_per_count;
 	int use_performance_counter;
 #endif
-
+	/** 校准定时器 */
 	struct timeval adjust_monotonic_clock;
+	/** 最后一次调整时间 */
 	struct timeval last_time;
 };
 
@@ -375,8 +413,20 @@ struct event_base {
 	const struct eventop *evsel;
 	/** eventop的自定义数据 */
 	void *evbase;
-	/** 时间对象 */
+	/** 定时器对象 */
 	struct evutil_monotonic_timer monotonic_timer;
+	/** 最后更新的定时器，秒 */
+	time_t last_updated_clock_diff;
+	/** 系统日期时间相差 */
+	struct timeval tv_clock_diff;
+	/** 回调队列头 */
+	struct evcallback_list *activequeues;
+	/** 队列数量 */
+	int nactivequeues;
+	/** 小根堆 */
+	struct min_heap timeheap;
+	/** 哈希表管理*/
+	struct event_io_map io;
 	struct event_changelist changelist;
 	const struct eventop *evsigsel;
 	struct evsig_info sig;
@@ -392,18 +442,12 @@ struct event_base {
 	int event_running_priority;
 	int runnig_loop;
 	int n_deferreds_queued;
-	struct evcallback_list *activequeues;
-	int nactivequeues;
 	struct evcallback_list active_later_queue;
 	struct common_timeout_list **common_timeout_queues;
 	int n_common_timeouts;
 	int n_common_timeouts_allocated;
-	struct event_io_map io;
 	struct event_signal_map sigmap;
-	struct min_heap timeheap;
 	struct timeval tv_cache;
-	struct timeval tv_clock_diff;
-	time_t last_updated_clock_diff;
 	struct event_callback *current_event;
 #ifdef _WIN32
 	struct event_iocp_port *iocp;
@@ -423,15 +467,22 @@ struct event_base {
 /** 创建一个event_base对象，并返回指向其的指针 */
 struct event_base *event_base_new(void);
 
+/** 创建全局唯一event_base对象 */
+struct event_base* event_init(void);
+
 /** 创建一个event_config对象，其可以改变event_base的行为 */
 struct event_config *event_config_new(void);
+
+/** 销毁event_config对象 */
+void event_config_free(struct event_config* cfg);
 
 /** 使用event_config初始化event_base，该配置可以避免某些事件通知机制 */
 struct event_base *event_base_new_with_config(const struct event_config *);
 
-/** 根据不同系统配置获取时间函数 */
+/** 给event_base配置定时器对象 */
 int evutil_configure_monotonic_time_(struct evutil_monotonic_timer *mt, int flags);
 
+/** 获取定时器运行时间，精确到微妙 */
 int evutil_gettime_monotonic_(struct evutil_monotonic_timer *mt, struct timeval *tv);
 
 int evutil_make_internal_pipe_(evutil_socket_t fd[2]);
@@ -444,7 +495,13 @@ int event_base_priority_init(struct event_base *, int);
 
 typedef void (*event_callback_fn)(evutil_socket_t, short, void *);
 
+/** 分配事件 */
 int event_assign(struct event *, struct event_base *, evutil_socket_t, short, event_callback_fn, void *);
+
+/** 加入事件 */
+int event_add(struct event* ev, const struct timeval* timeout);
+
+int event_add_nolock_(struct event* ev, const struct timeval* tv, int tv_is_absolute);
 
 int	event_priority_set(struct event*, int);
 
@@ -461,6 +518,7 @@ uint32_t evutil_weakrand_seed_(struct evutil_weakrand_state* state, uint32_t see
 #ifdef _WIN32
 HMODULE evutil_load_windows_system_library_(const TCHAR *library_name);
 
+/** 获取Unix时间戳，精确到微妙 */
 int evutil_gettimeofday(struct timeval *tv, struct timezone *tz);
 
 int event_base_start_iocp_(struct event_base *base, int n_cpus);
