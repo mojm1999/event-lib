@@ -4,10 +4,32 @@
 #define cout std::cout
 #define endl std::endl
 
+void onTime(intptr_t sock, short event, void* arg)
+{
+	cout << "i am ontime()" << endl;
+	struct timeval tv;
+	tv.tv_sec = 1;
+	tv.tv_usec = 0;
+	event_add((struct event*)arg, &tv);
+}
+
 int main()
 {
 	/** 设置环境变量 */
 	putenv("EVENT_PRECISE_TIMER=1");
+
+	/** 定时事件 */
+	{
+		event_init();
+		struct event ev_time;
+		evtimer_set(&ev_time, onTime, &ev_time);
+		struct timeval tv;
+		tv.tv_sec = 1;
+		tv.tv_usec = 0;
+		event_add(&ev_time, &tv);
+		event_dispatch();
+		return 0;
+	}
 
 	/** 测试定时器 */
 	struct event_base *base = event_base_new();
@@ -41,5 +63,6 @@ int main()
 		min_heap_push_(&base->timeheap, e);
 	}
 	min_heap_pop_(&base->timeheap);
+	
 	return 0;
 }

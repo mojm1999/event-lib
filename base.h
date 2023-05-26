@@ -25,13 +25,14 @@ extern "C" {
 
 #define EVENT_MAX_PRIORITIES 256
 
-#define EVLIST_TIMEOUT	    0x01
-#define EVLIST_INSERTED	    0x02
-#define EVLIST_ACTIVE	    0x08
-#define EVLIST_INTERNAL	    0x10
+/** event_callback */
+#define EVLIST_TIMEOUT	    0x01	/** 超时 */
+#define EVLIST_INSERTED	    0x02	/** 已插入 */
+#define EVLIST_ACTIVE	    0x08	/** 活跃 */
+#define EVLIST_INTERNAL	    0x10	/** 内部的 */
 #define EVLIST_ACTIVE_LATER 0x20
-#define EVLIST_FINALIZING   0x40
-#define EVLIST_INIT			0x80
+#define EVLIST_FINALIZING   0x40	/** 结束 */
+#define EVLIST_INIT			0x80	/** 创建事件之初 */
 
 #define EVLIST_ALL          0xff
 
@@ -43,9 +44,6 @@ struct name	{						\
 	struct type *tqh_first;	/* 指向第一个元素 */		\
 	struct type **tqh_last;	/* 指向最后元素的next指针 */		\
 }
-
-#define TAILQ_HEAD_INITIALIZER(head)			\
-	{ NULL, &(head).tqh_first }
 
 #define TAILQ_ENTRY(type)			\
 struct {						\
@@ -62,16 +60,22 @@ struct {						\
 #define	TAILQ_EMPTY(head)						\
 	(TAILQ_FIRST(head) == TAILQ_END(head))
 
+#define TAILQ_FOREACH(var, head, field)			\
+for ((var) = TAILQ_FIRST(head);				\
+	 (var) != TAILQ_END(head);						\
+	 (var) = TAILQ_NEXT(var, field))	
+
+/** 反转 */
 #define TAILQ_LAST(head, headname)			\
 	(*(((struct headname *)((head)->tqh_last))->tqh_last))
 
 #define TAILQ_PREV(elm, headname, field)				\
 	(*(((struct headname *)((elm)->field.tqe_prev))->tqh_last))
 
-#define TAILQ_FOREACH(var, head, field)			\
-for ((var) = TAILQ_FIRST(head);				\
-	 (var) != TAILQ_END(head);						\
-	 (var) = TAILQ_NEXT(var, field))	
+#define TAILQ_FOREACH_REVERSE(var, head, headname, field)		\
+for((var) = TAILQ_LAST(head, headname);				\
+	(var) != TAILQ_END(head);					\
+	(var) = TAILQ_PREV(var, headname, field))
 
 /*
  * tail queue functions
@@ -98,6 +102,16 @@ do {							\
 	(elm)->field.tqe_prev = (head)->tqh_last;			\
 	*(head)->tqh_last = (elm);					\
 	(head)->tqh_last = &(elm)->field.tqe_next;			\
+} while (0)
+
+#define TAILQ_INSERT_AFTER(head, listelm, elm, field) do {		\
+	if (((elm)->field.tqe_next = (listelm)->field.tqe_next) != NULL)\
+		(elm)->field.tqe_next->field.tqe_prev =			\
+		    &(elm)->field.tqe_next;				\
+	else								\
+		(head)->tqh_last = &(elm)->field.tqe_next;		\
+	(listelm)->field.tqe_next = (elm);				\
+	(elm)->field.tqe_prev = &(listelm)->field.tqe_next;		\
 } while (0)
 
 #define TAILQ_REMOVE(head, elm, field)				\
@@ -128,12 +142,35 @@ struct {					\
 */
 #define	LIST_FIRST(head)		((head)->lh_first)
 #define	LIST_END(head)			NULL
+#define	LIST_EMPTY(head)		(LIST_FIRST(head) == LIST_END(head))
 #define	LIST_NEXT(elm, field)		((elm)->field.le_next)
 
 #define LIST_FOREACH(var, head, field)					\
 for((var) = LIST_FIRST(head);					\
 	(var)!= LIST_END(head);					\
 	(var) = LIST_NEXT(var, field))
+
+/*
+* list functions
+*/
+#define	LIST_INIT(head) do {						\
+	LIST_FIRST(head) = LIST_END(head);				\
+} while (0)
+
+#define LIST_INSERT_HEAD(head, elm, field) do {				\
+	if (((elm)->field.le_next = (head)->lh_first) != NULL)		\
+		(head)->lh_first->field.le_prev = &(elm)->field.le_next;\
+	(head)->lh_first = (elm);					\
+	(elm)->field.le_prev = &(head)->lh_first;			\
+} while (0)
+
+#define LIST_REMOVE(elm, field) do {					\
+	if ((elm)->field.le_next != NULL)				\
+		(elm)->field.le_next->field.le_prev =			\
+		    (elm)->field.le_prev;				\
+	*(elm)->field.le_prev = (elm)->field.le_next;			\
+} while (0)
+
 
 /*
 * Timeval definitions
@@ -165,8 +202,16 @@ do {								\
 
 #define	evutil_timerclear(tvp)	(tvp)->tv_sec = (tvp)->tv_usec = 0
 
+/** 偏移量 */
+#define evutil_offsetof(type, field) offsetof(type, field)
+
+#define EVUTIL_UPCAST(ptr, type, field)				\
+	((type *)(((char*)(ptr)) - evutil_offsetof(type, field)))
+
+void event_set(struct event*, evutil_socket_t, short, void (*)(evutil_socket_t, short, void*), void*);
+
 /** 设置时间事件 */
-#define evtimer_set(ev, cb, arg)	event_assign((ev), -1, 0, (cb), (arg))
+#define evtimer_set(ev, cb, arg)	event_set((ev), -1, 0, (cb), (arg))
 
 
 enum event_method_feature {
@@ -202,13 +247,16 @@ struct event_config {
 
 struct eventop {
 	const char *name;
+	/** 初始化base */
 	void *(*init)(struct event_base *);
+	/** 加入事件 */
 	int (*add)(struct event_base *, evutil_socket_t fd, short old, short events, void *fdinfo);
 	int (*del)(struct event_base *, evutil_socket_t fd, short old, short events, void *fdinfo);
 	int (*dispatch)(struct event_base *, struct timeval *);
 	void (*dealloc)(struct event_base *);
 	int need_reinit;
 	enum event_method_feature features;
+	/** 额外长度 */
 	size_t fdinfo_len;
 };
 
@@ -228,37 +276,41 @@ struct event_changelist {
 
 struct event_callback {
 	TAILQ_ENTRY(event_callback) evcb_active_next;
-	short evcb_flags;	/** 状态标记 EVLIST_ACTIVE */
-	uint8_t evcb_pri;	/** 优先级 */
-	uint8_t evcb_closure;	/** 关闭行为 */
+	short evcb_flags;	/** 状态标记 EVLIST_INIT */
+	uint8_t evcb_pri;	/** 优先级 nactivequeues >> 2 */
+	uint8_t evcb_closure;	/** 关闭行为 EV_CLOSURE_EVENT */
 	union {
-		void (*evcb_callback)(evutil_socket_t, short, void *);	/** 事件触发时回调 */
+		void (*evcb_callback)(evutil_socket_t, short, void *);	/** 回调函数 */
 		void (*evcb_selfcb)(struct event_callback *, void*);
 		void (*evcb_evfinalize)(struct event *, void *);
 		void (*evcb_cbfinalize)(struct event_callback *, void *);
 	} evcb_cb_union;
-	void *evcb_arg;	/** 回调传入参数 */
+	void *evcb_arg;	/** 回调实参 */
 };
 
-#define EV_CLOSURE_EVENT 0
-#define EV_CLOSURE_EVENT_SIGNAL 1
-#define EV_CLOSURE_EVENT_PERSIST 2
+#define EV_CLOSURE_EVENT			0	/** 单次 */
+#define EV_CLOSURE_EVENT_SIGNAL		1	/** 信号 */
+#define EV_CLOSURE_EVENT_PERSIST	2	/** 持久 */
+#define EV_CLOSURE_CB_SELF			3
+#define EV_CLOSURE_CB_FINALIZE		4
+#define EV_CLOSURE_EVENT_FINALIZE	5
+#define EV_CLOSURE_EVENT_FINALIZE_FREE 6
 
 
 TAILQ_HEAD(evcallback_list, event_callback);
 
 struct event {
-	evutil_socket_t ev_fd;	/** 文件描述符 */
+	evutil_socket_t ev_fd;	/** 文件描述符 -1 */
 	struct event_base *ev_base;	/** 绑定到event_base */
 	struct event_callback ev_evcallback; /** 回调结构体 */
 	union {
 		TAILQ_ENTRY(event) ev_next_with_common_timeout;
 		int min_heap_idx;
-	} ev_timeout_pos;
+	} ev_timeout_pos;	/** 时间小根堆索引位 -1 */
 	union {
 		struct {
 			LIST_ENTRY(event) ev_io_next;
-			struct timeval ev_timeout;
+			struct timeval ev_timeout;	/**  0 */
 		} ev_io;
 		struct {
 			LIST_ENTRY(event) ev_signal_next;
@@ -266,8 +318,8 @@ struct event {
 			short *ev_pncalls;
 		} ev_signal;
 	} ev_;
-	short ev_events;	/** 事件类型 EV_READ */
-	short ev_res;		/** 结果类型 EV_TIMEOUT */
+	short ev_events;	/** 事件类型 0 (EV_READ) */
+	short ev_res;		/** 回调函数结果 0 (EV_TIMEOUT) */
 	struct timeval ev_timeout;	/** 超时时间 */
 };
 
@@ -280,10 +332,12 @@ struct event {
 #define ev_ncalls	ev_.ev_signal.ev_ncalls
 #define ev_pncalls	ev_.ev_signal.ev_pncalls
 
+#define ev_io_next		ev_.ev_io.ev_io_next
 #define ev_io_timeout	ev_.ev_io.ev_timeout
 #define ev_signal_next	ev_.ev_signal.ev_signal_next
 
 LIST_HEAD(event_dlist, event);
+TAILQ_HEAD(event_list, event);
 
 typedef void (*ev_sighandler_t)(int);
 
@@ -306,9 +360,13 @@ struct evsig_info {
 #define EV_SIGNAL	0x08
 
 #define EV_PERSIST	0x10
+#define EV_ET		0x20
+
 #define EV_CLOSED	0x80
 
 int evsig_init_(struct event_base *);
+
+void evsig_set_base_(struct event_base* base);
 
 struct evmap_io {
 	struct event_dlist events;
@@ -325,22 +383,30 @@ struct event_map_entry {
 	HT_ENTRY(event_map_entry) map_node;
 	evutil_socket_t fd;
 	union {
-		struct evmap_io evmap_io;
+		struct evmap_io evmap_io;	/** 记录数据 */
 	} ent;
 };
 
 HT_HEAD(event_io_map, event_map_entry);
 
+/** 初始化哈希表 */
 void evmap_io_initmap_(struct event_io_map *ctx);
-int evmap_io_add_(struct evnt_base *base, evutil_socket_t fd, struct event *ev);
 
-void evmap_signal_initmap_(struct event_signal_map *ctx);
-void evmap_signal_active_(struct event_base* base, evutil_socket_t signum, int ncalls);
+/** 加入IO事件，插入哈希表 */
+int evmap_io_add_(struct event_base *base, evutil_socket_t fd, struct event *ev);
+
+/** 删除IO */
+int evmap_io_del_(struct event_base* base, evutil_socket_t fd, struct event* ev);
 
 struct event_signal_map {
 	void **entries;
 	int nentries;
 };
+
+int evmap_signal_add_(struct event_base* base, int signum, struct event* ev);
+
+void evmap_signal_initmap_(struct event_signal_map *ctx);
+void evmap_signal_active_(struct event_base* base, evutil_socket_t signum, int ncalls);
 
 #define NSIG            23
 
@@ -370,6 +436,13 @@ struct evutil_monotonic_timer {
 	struct timeval adjust_monotonic_clock;
 	/** 最后一次调整时间 */
 	struct timeval last_time;
+};
+
+struct common_timeout_list {
+	struct event_list events;
+	struct timeval duration;
+	struct event timeout_event;
+	struct event_base* base;
 };
 
 struct evutil_weakrand_state {
@@ -408,6 +481,13 @@ struct event_iocp_port {
 
 #include <minheap.h>
 
+#define EVLOOP_ONCE	0x01
+#define EVLOOP_NONBLOCK	0x02
+#define EVLOOP_NO_EXIT_ON_EMPTY 0x04
+
+#define EVENT_DEL_NOBLOCK 0
+#define EVENT_DEL_EVEN_IF_FINALIZING 3
+
 struct event_base {
 	/** IO多路复用方式 */
 	const struct eventop *evsel;
@@ -419,47 +499,60 @@ struct event_base {
 	time_t last_updated_clock_diff;
 	/** 系统日期时间相差 */
 	struct timeval tv_clock_diff;
-	/** 回调队列头 */
+	/** 活跃队列数组 */
 	struct evcallback_list *activequeues;
 	/** 队列数量 */
 	int nactivequeues;
-	/** 小根堆 */
+	/** 时间最小堆 */
 	struct min_heap timeheap;
-	/** 哈希表管理*/
+	/** 哈希表管理IO */
 	struct event_io_map io;
-	struct event_changelist changelist;
+	/** 数组管理信号 */
+	struct event_signal_map sigmap;
+	/** 信号多路复用 */
 	const struct eventop *evsigsel;
-	struct evsig_info sig;
-	int virtual_event_count;
-	int virtual_event_count_max;
+	/** 同超时列表 */
+	struct common_timeout_list **common_timeout_queues;
+	/** 内部事件数量 */
 	int event_count;
 	int event_count_max;
+	/** 活跃事件数量 */
 	int event_count_active;
 	int event_count_active_max;
+	/** 是否运行loop函数 */
+	int running_loop;
+	/** 通知主线程挂起 */
+	int is_notify_pending;
+	/** 唤醒函数 */
+	int (*th_notify_fn)(struct event_base *base);
+	/** dispatch时间缓存 */
+	struct timeval tv_cache;
+	/** 下次应该激活的事件列表 */
+	struct evcallback_list active_later_queue;
+	/** 处理通用信号 */
+	struct evsig_info sig;
+	struct event_changelist changelist;
+	int virtual_event_count;
+	int virtual_event_count_max;
 	int event_gotterm;
 	int event_break;
 	int event_continue;
+	/** 正在处理的队列 */
 	int event_running_priority;
-	int runnig_loop;
 	int n_deferreds_queued;
-	struct evcallback_list active_later_queue;
-	struct common_timeout_list **common_timeout_queues;
 	int n_common_timeouts;
 	int n_common_timeouts_allocated;
-	struct event_signal_map sigmap;
-	struct timeval tv_cache;
 	struct event_callback *current_event;
 #ifdef _WIN32
 	struct event_iocp_port *iocp;
 #endif
+	/** 配置某些特性 */
 	enum event_base_config_flag flags;
 	struct timeval max_dispatch_time;
 	int max_dispatch_callbacks;
 	int limit_callbacks_after_prio;
-	int is_notify_pending;
 	evutil_socket_t th_notify_fd[2];
 	struct event th_notify;
-	int (*th_notify_fn)(struct event_base *base);
 	struct evutil_weakrand_state weakrand_seed;
 	LIST_HEAD(once_event_list, event_once) once_events;
 };
@@ -479,33 +572,50 @@ void event_config_free(struct event_config* cfg);
 /** 使用event_config初始化event_base，该配置可以避免某些事件通知机制 */
 struct event_base *event_base_new_with_config(const struct event_config *);
 
+/** 销毁event_base对象 */
+void event_base_free(struct event_base *);
+
 /** 给event_base配置定时器对象 */
 int evutil_configure_monotonic_time_(struct evutil_monotonic_timer *mt, int flags);
 
 /** 获取定时器运行时间，精确到微妙 */
 int evutil_gettime_monotonic_(struct evutil_monotonic_timer *mt, struct timeval *tv);
 
-int evutil_make_internal_pipe_(evutil_socket_t fd[2]);
+/** 获取Unix时间戳，精确到微妙 */
+int evutil_gettimeofday(struct timeval *tv, struct timezone *tz);
 
-void event_changelist_init_(struct event_changelist *changelist);
-
-void event_base_free(struct event_base *);
-
-int event_base_priority_init(struct event_base *, int);
-
+/** 回调函数指针 */
 typedef void (*event_callback_fn)(evutil_socket_t, short, void *);
 
-/** 分配事件 */
+/** 创建事件 */
 int event_assign(struct event *, struct event_base *, evutil_socket_t, short, event_callback_fn, void *);
 
 /** 加入事件 */
 int event_add(struct event* ev, const struct timeval* timeout);
 
+/** 加入逻辑 */
 int event_add_nolock_(struct event* ev, const struct timeval* tv, int tv_is_absolute);
+
+/** 循环处理事件 */
+int event_dispatch(void);
+
+/** 等待事件变为活动状态，然后运行它们的回调 */
+int event_base_loop(struct event_base*, int);
+
+/** 删除事件 */
+int event_del_nolock_(struct event* ev, int blocking);
+
+void event_active_nolock_(struct event* ev, int res, short count);
+
+int evutil_make_internal_pipe_(evutil_socket_t fd[2]);
+
+void event_changelist_init_(struct event_changelist *changelist);
+
+int event_base_priority_init(struct event_base *, int);
+
 
 int	event_priority_set(struct event*, int);
 
-void event_active_nolock_(struct event* ev, int res, short count);
 
 int event_callback_activate_nolock_(struct event_base*, struct event_callback*);
 
@@ -518,8 +628,6 @@ uint32_t evutil_weakrand_seed_(struct evutil_weakrand_state* state, uint32_t see
 #ifdef _WIN32
 HMODULE evutil_load_windows_system_library_(const TCHAR *library_name);
 
-/** 获取Unix时间戳，精确到微妙 */
-int evutil_gettimeofday(struct timeval *tv, struct timezone *tz);
 
 int event_base_start_iocp_(struct event_base *base, int n_cpus);
 
