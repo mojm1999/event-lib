@@ -93,8 +93,14 @@ int
 win32_add(struct event_base* base, evutil_socket_t fd,
 	short old, short events, void* idx_)
 {
+	struct win32op* win32op = base->evbase;
+	if ((events & EV_SIGNAL) && win32op->signals_are_broken)
+		return (-1);
 
-	return (0);
+	if (!(events & (EV_READ | EV_WRITE)))
+		return (0);
+
+	return 0;
 }
 
 int
@@ -105,11 +111,85 @@ win32_del(struct event_base* base, evutil_socket_t fd, short old, short events,
 	return 0;
 }
 
+static void
+fd_set_copy(struct win_fd_set* out, const struct win_fd_set* in)
+{
+	out->fd_count = in->fd_count;
+	memcpy(out->fd_array, in->fd_array, in->fd_count * (sizeof(SOCKET)));
+}
+
 int
 win32_dispatch(struct event_base* base, struct timeval* tv)
 {
+	struct win32op* win32op = base->evbase;
+	if (win32op->resize_out_sets) {
+		size_t size = FD_SET_ALLOC_SIZE(win32op->num_fds_in_fd_sets);
+		if (!(win32op->readset_out = realloc(win32op->readset_out, size)))
+			return (-1);
+		if (!(win32op->exset_out = realloc(win32op->exset_out, size)))
+			return (-1);
+		if (!(win32op->writeset_out = realloc(win32op->writeset_out, size)))
+			return (-1);
+		win32op->resize_out_sets = 0;
+	}
 
-	return (0);
+	fd_set_copy(win32op->readset_out, win32op->readset_in);
+	fd_set_copy(win32op->exset_out, win32op->writeset_in);
+	fd_set_copy(win32op->writeset_out, win32op->writeset_in);
+
+	int fd_count = (win32op->readset_out->fd_count > win32op->writeset_out->fd_count) ?
+		win32op->readset_out->fd_count : win32op->writeset_out->fd_count;
+
+	if (!fd_count) {
+		long msec = tv ? evutil_tv_to_msec_(tv) : LONG_MAX;
+		if (msec < 0)
+			msec = LONG_MAX;
+		Sleep(msec);
+		return 0;
+	}
+
+	int res = select(fd_count,
+		(struct fd_set*)win32op->readset_out,
+		(struct fd_set*)win32op->writeset_out,
+		(struct fd_set*)win32op->exset_out, tv);
+
+	if (res <= 0) {
+		return res;
+	}
+
+	//unsigned j, i;
+	//SOCKET s;
+	//if (win32op->readset_out->fd_count) {
+	//	i = evutil_weakrand_range_(&base->weakrand_seed,
+	//		win32op->readset_out->fd_count);
+	//	for (j = 0; j < win32op->readset_out->fd_count; ++j) {
+	//		if (++i >= win32op->readset_out->fd_count)
+	//			i = 0;
+	//		s = win32op->readset_out->fd_array[i];
+	//		evmap_io_active_(base, s, EV_READ);
+	//	}
+	//}
+	//if (win32op->exset_out->fd_count) {
+	//	i = evutil_weakrand_range_(&base->weakrand_seed,
+	//		win32op->exset_out->fd_count);
+	//	for (j = 0; j < win32op->exset_out->fd_count; ++j) {
+	//		if (++i >= win32op->exset_out->fd_count)
+	//			i = 0;
+	//		s = win32op->exset_out->fd_array[i];
+	//		evmap_io_active_(base, s, EV_WRITE);
+	//	}
+	//}
+	//if (win32op->writeset_out->fd_count) {
+	//	i = evutil_weakrand_range_(&base->weakrand_seed,
+	//		win32op->writeset_out->fd_count);
+	//	for (j = 0; j < win32op->writeset_out->fd_count; ++j) {
+	//		if (++i >= win32op->writeset_out->fd_count)
+	//			i = 0;
+	//		s = win32op->writeset_out->fd_array[i];
+	//		evmap_io_active_(base, s, EV_WRITE);
+	//	}
+	//}
+	return 0;
 }
 
 void

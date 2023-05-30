@@ -584,6 +584,9 @@ int evutil_gettime_monotonic_(struct evutil_monotonic_timer *mt, struct timeval 
 /** 获取Unix时间戳，精确到微妙 */
 int evutil_gettimeofday(struct timeval *tv, struct timezone *tz);
 
+/** 转换毫秒 */
+long evutil_tv_to_msec_(const struct timeval* tv);
+
 /** 回调函数指针 */
 typedef void (*event_callback_fn)(evutil_socket_t, short, void *);
 
@@ -605,7 +608,11 @@ int event_base_loop(struct event_base*, int);
 /** 删除事件 */
 int event_del_nolock_(struct event* ev, int blocking);
 
+/** 转活跃事件 */
 void event_active_nolock_(struct event* ev, int res, short count);
+
+/** 回调激活活跃事件 */
+int event_callback_activate_nolock_(struct event_base*, struct event_callback*);
 
 int evutil_make_internal_pipe_(evutil_socket_t fd[2]);
 
@@ -617,7 +624,6 @@ int event_base_priority_init(struct event_base *, int);
 int	event_priority_set(struct event*, int);
 
 
-int event_callback_activate_nolock_(struct event_base*, struct event_callback*);
 
 int evutil_socketpair(int d, int type, int protocol, evutil_socket_t sv[2]);
 

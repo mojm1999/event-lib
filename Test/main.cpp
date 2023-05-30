@@ -18,6 +18,15 @@ int main()
 	/** 设置环境变量 */
 	putenv("EVENT_PRECISE_TIMER=1");
 
+	/** 启动Winsock DLL */
+#ifdef _WIN32
+	WSADATA wsa_data;
+	if (0 != WSAStartup(0x0202, &wsa_data)) {
+		cout << "WSAStartup failed" << endl;
+		return 1;
+	}
+#endif // _WIN32
+
 	/** 定时事件 */
 	{
 		event_init();

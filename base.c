@@ -1065,13 +1065,13 @@ evthread_notify_base(struct event_base* base)
 int
 event_add_nolock_(struct event* ev, const struct timeval* tv, int tv_is_absolute)
 {
-	if (!(ev->ev_flags & ~EVLIST_ALL) ||
+	if (ev->ev_flags & ~EVLIST_ALL ||
 		ev->ev_flags & EVLIST_FINALIZING) {
 		return -1;
 	}
 
 	struct event_base* base = ev->ev_base;
-	/** 回调数据在list的状态 */
+	/** 小根堆扩容 */
 	if (tv != NULL && !(ev->ev_flags & EVLIST_TIMEOUT)) {
 		if (min_heap_reserve_(&base->timeheap, 1 + min_heap_size_(&base->timeheap)) == -1)
 			return -1;
@@ -1131,7 +1131,7 @@ event_add_nolock_(struct event* ev, const struct timeval* tv, int tv_is_absolute
 			evutil_timeradd(&now, tv, &ev->ev_timeout);
 		}
 
-		/** 最小堆管理超时事件 */
+		/** 注册超时事件 */
 		event_queue_insert_timeout(base, ev);
 
 		if (common_timeout) {
@@ -1386,6 +1386,7 @@ event_process_active_single_queue(struct event_base* base,
 	for (evcb = TAILQ_FIRST(activeq); evcb; evcb = TAILQ_FIRST(activeq)) {
 		struct event* ev = NULL;
 		if (evcb->evcb_flags & EVLIST_INIT) {
+			/** 偏移量巧妙地转为event */
 			ev = event_callback_to_event(evcb);
 			if (ev->ev_events & EV_PERSIST || ev->ev_flags & EVLIST_FINALIZING)
 				event_queue_remove_active(base, evcb);
@@ -1395,8 +1396,10 @@ event_process_active_single_queue(struct event_base* base,
 		else {
 			event_queue_remove_active(base, evcb);
 		}
-		if (!(evcb->evcb_flags & EVLIST_INTERNAL))
+
+		if (!(evcb->evcb_flags & EVLIST_INTERNAL)) {
 			++count;
+		}
 
 		base->current_event = evcb;
 		switch (evcb->evcb_closure) {
@@ -1406,27 +1409,31 @@ event_process_active_single_queue(struct event_base* base,
 		case EV_CLOSURE_EVENT_PERSIST:
 			event_persist_closure(base, ev);
 			break;
-		case EV_CLOSURE_EVENT: {
+		case EV_CLOSURE_EVENT:
+			{
 			void (*evcb_callback)(evutil_socket_t, short, void*);
 			evcb_callback = *ev->ev_callback;
 			short res = ev->ev_res;
 			evcb_callback(ev->ev_fd, res, ev->ev_arg);
-		}
-		break;
-		case EV_CLOSURE_CB_SELF: {
+			}
+			break;
+		case EV_CLOSURE_CB_SELF:
+			{
 			void (*evcb_selfcb)(struct event_callback*, void*) = evcb->evcb_cb_union.evcb_selfcb;
 			evcb_selfcb(evcb, evcb->evcb_arg);
-		}
-		break;
-		case EV_CLOSURE_CB_FINALIZE: {
+			}
+			break;
+		case EV_CLOSURE_CB_FINALIZE:
+			{
 			void (*evcb_cbfinalize)(struct event_callback*, void*) = evcb->evcb_cb_union.evcb_cbfinalize;
 			base->current_event = NULL;
 			if(evcb->evcb_flags & EVLIST_FINALIZING)
 				evcb_cbfinalize(evcb, evcb->evcb_arg);
-		}
-		break;
+			}
+			break;
 		case EV_CLOSURE_EVENT_FINALIZE:
-		case EV_CLOSURE_EVENT_FINALIZE_FREE: {
+		case EV_CLOSURE_EVENT_FINALIZE_FREE:
+			{
 			base->current_event = NULL;
 			void (*evcb_evfinalize)(struct event*, void*);
 			evcb_evfinalize = ev->ev_evcallback.evcb_cb_union.evcb_evfinalize;
@@ -1434,8 +1441,8 @@ event_process_active_single_queue(struct event_base* base,
 				evcb_evfinalize(ev, ev->ev_arg);
 			if (evcb->evcb_closure == EV_CLOSURE_EVENT_FINALIZE_FREE)
 				free(ev);
-		}
-		break;
+			}
+			break;
 		}
 
 		base->current_event = NULL;
@@ -1460,11 +1467,8 @@ event_process_active_single_queue(struct event_base* base,
 static int
 event_process_active(struct event_base* base)
 {
-	int i, c = 0;
-	const struct timeval* endtime;
 	struct timeval tv;
-	const int maxcb = base->max_dispatch_callbacks;
-	const int limit_after_prio = base->limit_callbacks_after_prio;
+	const struct timeval* endtime;
 	if (base->max_dispatch_time.tv_sec >= 0) {
 		update_time_cache(base);
 		gettime(base, &tv);
@@ -1475,12 +1479,18 @@ event_process_active(struct event_base* base)
 		endtime = NULL;
 	}
 
+	const int limit_after_prio = base->limit_callbacks_after_prio;
+	const int maxcb = base->max_dispatch_callbacks;
+
 	struct evcallback_list* activeq = NULL;
+	int i, c = 0;
+	/** 从头到尾取活跃队列 */
 	for (i = 0; i < base->nactivequeues; ++i) {
 		if (TAILQ_FIRST(&base->activequeues[i]) != NULL) {
 			base->event_running_priority = i;
 			activeq = &base->activequeues[i];
 			if (i < limit_after_prio)
+				/** 处理单条队列 */
 				c = event_process_active_single_queue(base, activeq,
 					INT_MAX, NULL);
 			else
@@ -1493,6 +1503,7 @@ event_process_active(struct event_base* base)
 				break;
 		}
 	}
+
 
 done:
 	base->event_running_priority = -1;
@@ -1518,7 +1529,6 @@ event_base_loop(struct event_base* base, int flags)
 		if (base->event_gotterm || base->event_break) {
 			break;
 		}
-		/** 没有事件直接退出 */
 		if (!(flags & EVLOOP_NO_EXIT_ON_EMPTY) &&
 			!event_haveevents(base) && !(base)->event_count_active) {
 			retval = 1;
@@ -1531,7 +1541,7 @@ event_base_loop(struct event_base* base, int flags)
 
 		base->tv_cache.tv_sec = 0;
 		base->event_continue = 0;
-		/** 距离top事件触发的倒计时 */
+		/** 最近超时事件倒计时 */
 		tv_p = &tv;
 		if (!(base)->event_count_active && !(flags & EVLOOP_NONBLOCK)) {
 			timeout_next(base, &tv_p);
@@ -1546,9 +1556,11 @@ event_base_loop(struct event_base* base, int flags)
 		}
 
 		update_time_cache(base);
+		/** 处理超时事件 */
 		timeout_process(base);
 
 		if ((base)->event_count_active) {
+			/** 处理活跃事件 */
 			int n = event_process_active(base);
 			if ((flags & EVLOOP_ONCE)
 				&& (base)->event_count_active == 0
@@ -1728,6 +1740,18 @@ evutil_gettimeofday(struct timeval* tv, struct timezone* tz)
 	tv->tv_sec = (long)(ft.ft_64 / UNITS_PER_SEC);
 	tv->tv_usec = (long)((ft.ft_64 / UNITS_PER_USEC) % USEC_PER_SEC);
 	return 0;
+}
+
+#define MAX_SECONDS_IN_MSEC_LONG \
+	(((LONG_MAX) - 999) / 1000)
+
+long
+evutil_tv_to_msec_(const struct timeval* tv)
+{
+	if (tv->tv_usec > 1000000 || tv->tv_sec > MAX_SECONDS_IN_MSEC_LONG)
+		return -1;
+
+	return (tv->tv_sec * 1000) + ((tv->tv_usec + 999) / 1000);
 }
 
 int
