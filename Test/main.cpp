@@ -7,10 +7,11 @@
 void onTime(intptr_t sock, short event, void* arg)
 {
 	cout << "i am ontime()" << endl;
-	struct timeval tv;
-	tv.tv_sec = 1;
-	tv.tv_usec = 0;
-	event_add((struct event*)arg, &tv);
+	struct timeval tv_onesec = { 1,0 };
+	struct event* evt = (struct event*)arg;
+	/** 设计common搭配min_heap，提升处理超时事件的性能 */
+	const struct timeval* tv_onesec_common = event_base_init_common_timeout(evt->ev_base, &tv_onesec);
+	event_add(evt, tv_onesec_common);
 }
 
 int main()

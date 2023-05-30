@@ -974,6 +974,89 @@ common_timeout_schedule(struct common_timeout_list* ctl,
 }
 
 static void
+common_timeout_callback(evutil_socket_t fd, short what, void* arg)
+{
+	struct timeval now;
+	struct common_timeout_list* ctl = arg;
+	struct event_base* base = ctl->base;
+	struct event* ev = NULL;
+	gettime(base, &now);
+	while (1) {
+		ev = TAILQ_FIRST(&ctl->events);
+		if (!ev || ev->ev_timeout.tv_sec > now.tv_sec ||
+			(ev->ev_timeout.tv_sec == now.tv_sec &&
+				(ev->ev_timeout.tv_usec & MICROSECONDS_MASK) > now.tv_usec))
+			break;
+		event_del_nolock_(ev, EVENT_DEL_NOBLOCK);
+		event_active_nolock_(ev, EV_TIMEOUT, 1);
+	}
+	if (ev)
+		common_timeout_schedule(ctl, &now, ev);
+}
+
+#define MAX_COMMON_TIMEOUTS 256
+
+const struct timeval*
+event_base_init_common_timeout(struct event_base* base,
+	const struct timeval* duration)
+{
+	struct timeval tv;
+	if (duration->tv_usec > 1000000) {
+		memcpy(&tv, duration, sizeof(struct timeval));
+		if (is_common_timeout(duration, base))
+			tv.tv_usec &= MICROSECONDS_MASK;
+		tv.tv_sec += tv.tv_usec / 1000000;
+		tv.tv_usec %= 1000000;
+		duration = &tv;
+	}
+	const struct timeval* result = NULL;
+	for (int i = 0; i < base->n_common_timeouts; ++i) {
+		const struct common_timeout_list* ctl =
+			base->common_timeout_queues[i];
+		if (duration->tv_sec == ctl->duration.tv_sec &&
+			duration->tv_usec == (ctl->duration.tv_usec & MICROSECONDS_MASK)) {
+			result = &ctl->duration;
+			goto done;
+		}
+	}
+	if (base->n_common_timeouts == MAX_COMMON_TIMEOUTS) {
+		goto done;
+	}
+	if (base->n_common_timeouts_allocated == base->n_common_timeouts) {
+		int n = base->n_common_timeouts < 16 ? 16 :
+			base->n_common_timeouts * 2;
+		/** 很有可能是从堆重新找新的空闲块 */
+		struct common_timeout_list** newqueues = realloc(base->common_timeout_queues,
+			n * sizeof(struct common_timeout_queue*));
+		if (!newqueues) {
+			goto done;
+		}
+		base->n_common_timeouts_allocated = n;
+		base->common_timeout_queues = newqueues;
+	}
+	struct common_timeout_list* new_ctl = calloc(1, sizeof(struct common_timeout_list));
+	if (!new_ctl) {
+		goto done;
+	}
+	TAILQ_INIT(&new_ctl->events);
+	new_ctl->duration.tv_sec = duration->tv_sec;
+	new_ctl->duration.tv_usec =
+		duration->tv_usec | COMMON_TIMEOUT_MAGIC |
+		(base->n_common_timeouts << COMMON_TIMEOUT_IDX_SHIFT);
+	evtimer_assign(&new_ctl->timeout_event, base,
+		common_timeout_callback, new_ctl);
+	new_ctl->timeout_event.ev_flags |= EVLIST_INTERNAL;
+	event_priority_set(&new_ctl->timeout_event, 0);
+	new_ctl->base = base;
+	base->common_timeout_queues[base->n_common_timeouts++] = new_ctl;
+	result = &new_ctl->duration;
+
+done:
+
+	return result;
+}
+
+static void
 insert_common_timeout_inorder(struct common_timeout_list* ctl, struct event* ev)
 {
 	struct event* e;
@@ -1016,9 +1099,11 @@ event_queue_insert_timeout(struct event_base* base, struct event* ev)
 	if (is_common_timeout(&ev->ev_timeout, base)) {
 		struct common_timeout_list* ctl =
 			get_common_timeout_list(base, &ev->ev_timeout);
+		/** 插入common队列 */
 		insert_common_timeout_inorder(ctl, ev);
 	}
 	else {
+		/** 插入小根堆 */
 		min_heap_push_(&base->timeheap, ev);
 	}
 }
@@ -1131,12 +1216,13 @@ event_add_nolock_(struct event* ev, const struct timeval* tv, int tv_is_absolute
 			evutil_timeradd(&now, tv, &ev->ev_timeout);
 		}
 
-		/** 注册超时事件 */
+		/** 插入超时事件 */
 		event_queue_insert_timeout(base, ev);
 
 		if (common_timeout) {
 			struct common_timeout_list* ctl =
 				get_common_timeout_list(base, &ev->ev_timeout);
+			/** 将common事件加入超时事件 */
 			if (ev == TAILQ_FIRST(&ctl->events))
 				common_timeout_schedule(ctl, &now, ev);
 		}

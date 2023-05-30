@@ -213,6 +213,8 @@ void event_set(struct event*, evutil_socket_t, short, void (*)(evutil_socket_t, 
 /** 设置时间事件 */
 #define evtimer_set(ev, cb, arg)	event_set((ev), -1, 0, (cb), (arg))
 
+#define evtimer_assign(ev, b, cb, arg) \
+	event_assign((ev), (b), -1, 0, (cb), (arg))
 
 enum event_method_feature {
 	EV_FEATURE_ET = 0x01,
@@ -305,8 +307,8 @@ struct event {
 	struct event_callback ev_evcallback; /** 回调结构体 */
 	union {
 		TAILQ_ENTRY(event) ev_next_with_common_timeout;
-		int min_heap_idx;
-	} ev_timeout_pos;	/** 时间小根堆索引位 -1 */
+		int min_heap_idx;	/** 时间小根堆索引位 -1 */
+	} ev_timeout_pos;
 	union {
 		struct {
 			LIST_ENTRY(event) ev_io_next;
@@ -438,6 +440,7 @@ struct evutil_monotonic_timer {
 	struct timeval last_time;
 };
 
+/** 一样的超时时长放队列，减少小根堆的压力 */
 struct common_timeout_list {
 	struct event_list events;
 	struct timeval duration;
@@ -511,7 +514,7 @@ struct event_base {
 	struct event_signal_map sigmap;
 	/** 信号多路复用 */
 	const struct eventop *evsigsel;
-	/** 同超时列表 */
+	/** 256条超时时长的队列 */
 	struct common_timeout_list **common_timeout_queues;
 	/** 内部事件数量 */
 	int event_count;
@@ -541,6 +544,7 @@ struct event_base {
 	int event_running_priority;
 	int n_deferreds_queued;
 	int n_common_timeouts;
+	/** 分配common时长队列数量 */
 	int n_common_timeouts_allocated;
 	struct event_callback *current_event;
 #ifdef _WIN32
@@ -590,8 +594,8 @@ long evutil_tv_to_msec_(const struct timeval* tv);
 /** 回调函数指针 */
 typedef void (*event_callback_fn)(evutil_socket_t, short, void *);
 
-/** 创建事件 */
-int event_assign(struct event *, struct event_base *, evutil_socket_t, short, event_callback_fn, void *);
+/** 初始化事件 */
+int event_assign(struct event*, struct event_base*, evutil_socket_t, short, event_callback_fn, void*);
 
 /** 加入事件 */
 int event_add(struct event* ev, const struct timeval* timeout);
@@ -614,16 +618,17 @@ void event_active_nolock_(struct event* ev, int res, short count);
 /** 回调激活活跃事件 */
 int event_callback_activate_nolock_(struct event_base*, struct event_callback*);
 
+/** 若有相同的超时时长，加上标记 */
+const struct timeval* event_base_init_common_timeout(struct event_base* base,
+	const struct timeval* duration);
+
 int evutil_make_internal_pipe_(evutil_socket_t fd[2]);
 
 void event_changelist_init_(struct event_changelist *changelist);
 
 int event_base_priority_init(struct event_base *, int);
 
-
 int	event_priority_set(struct event*, int);
-
-
 
 int evutil_socketpair(int d, int type, int protocol, evutil_socket_t sv[2]);
 
