@@ -4,7 +4,10 @@
 #define cout std::cout
 #define endl std::endl
 
-void onTime(intptr_t sock, short event, void* arg)
+int	hello_main();
+
+void
+onTime(intptr_t sock, short event, void* arg)
 {
 	cout << "i am ontime()" << endl;
 	struct timeval tv_onesec = { 1,0 };
@@ -14,7 +17,8 @@ void onTime(intptr_t sock, short event, void* arg)
 	event_add(evt, tv_onesec_common);
 }
 
-int main()
+int
+main()
 {
 	/** 设置环境变量 */
 	putenv("EVENT_PRECISE_TIMER=1");
@@ -27,6 +31,12 @@ int main()
 		return 1;
 	}
 #endif // _WIN32
+
+	/** socket服务 */
+	{
+		hello_main();
+		return 0;
+	}
 
 	/** 定时事件 */
 	{

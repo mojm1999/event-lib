@@ -460,6 +460,22 @@ evmap_io_del_(struct event_base* base, evutil_socket_t fd, struct event* ev)
 	return (retval);
 }
 
+void
+evmap_io_active_(struct event_base* base, evutil_socket_t fd, short events)
+{
+	struct event_io_map* io = &base->io;
+	struct evmap_io* ctx;
+	GET_IO_SLOT(ctx, io, fd, evmap_io);
+	if (NULL == ctx)
+		return;
+
+	struct event* ev;
+	LIST_FOREACH(ev, &ctx->events, ev_io_next) {
+		if (ev->ev_events & (events & ~EV_ET))
+			event_active_nolock_(ev, ev->ev_events & events, 1);
+	}
+}
+
 static int
 evmap_make_space(struct event_signal_map* map, int slot, int msize)
 {
@@ -1250,6 +1266,12 @@ event_dispatch(void)
 	return event_base_loop(current_base, 0);
 }
 
+int
+event_base_dispatch(struct event_base* event_base)
+{
+	return (event_base_loop(event_base, 0));
+}
+
 static int
 timeout_next(struct event_base* base, struct timeval** tv_p)
 {
@@ -1325,10 +1347,17 @@ timeout_process(struct event_base* base)
 }
 
 int
+event_del(struct event* ev)
+{
+	return event_del_nolock_(ev, EVENT_DEL_AUTOBLOCK);
+}
+
+int
 event_del_nolock_(struct event* ev, int blocking)
 {
-	if (ev->ev_base == NULL)
+	if (ev->ev_base == NULL) {
 		return -1;
+	}
 	if (blocking != EVENT_DEL_EVEN_IF_FINALIZING) {
 		if (ev->ev_flags & EVLIST_FINALIZING) {
 			return 0;
@@ -1408,12 +1437,6 @@ event_signal_closure(struct event_base* base, struct event* ev)
 static inline void
 event_persist_closure(struct event_base* base, struct event* ev)
 {
-	void (*evcb_callback)(evutil_socket_t, short, void*);
-
-	evutil_socket_t evcb_fd;
-	short evcb_res;
-	void* evcb_arg;
-
 	if (ev->ev_io_timeout.tv_sec || ev->ev_io_timeout.tv_usec) {
 
 		struct timeval run_at, relative_to, delay, now;
@@ -1451,11 +1474,12 @@ event_persist_closure(struct event_base* base, struct event* ev)
 		event_add_nolock_(ev, &run_at, 1);
 	}
 
-	evcb_callback = ev->ev_callback;
-	evcb_fd = ev->ev_fd;
-	evcb_res = ev->ev_res;
-	evcb_arg = ev->ev_arg;
+	evutil_socket_t evcb_fd = ev->ev_fd;
+	short evcb_res = ev->ev_res;
+	void* evcb_arg = ev->ev_arg;
 
+	void (*evcb_callback)(evutil_socket_t, short, void*);
+	evcb_callback = ev->ev_callback;
 	(evcb_callback)(evcb_fd, evcb_res, evcb_arg);
 }
 
@@ -1606,8 +1630,8 @@ event_base_loop(struct event_base* base, int flags)
 		evsig_set_base_(base);
 	base->event_gotterm = base->event_break = 0;
 
-	int retval, res = 0;
-	struct timeval tv;
+	int res, retval = 0;
+	struct timeval tv = { 0, 0 };
 	struct timeval* tv_p;
 	const struct eventop* evsel = base->evsel;
 	int done = 0;
@@ -1775,7 +1799,27 @@ evutil_weakrand_seed_(struct evutil_weakrand_state* state, uint32_t seed)
 	return seed;
 }
 
+int32_t
+evutil_weakrand_(struct evutil_weakrand_state* state)
+{
+	state->seed = ((state->seed) * 1103515245 + 12345) & 0x7fffffff;
+	return (int32_t)(state->seed);
+}
+
+int32_t
+evutil_weakrand_range_(struct evutil_weakrand_state* state, int32_t top)
+{
+	int32_t divisor, result;
+	divisor = INT32_MAX / top;
+	do {
+		result = evutil_weakrand_(state) / divisor;
+	} while (result >= top);
+	return result;
+}
+
 #ifdef _WIN32
+#include <mswsock.h>
+
 HMODULE
 evutil_load_windows_system_library_(const TCHAR* library_name)
 {
@@ -1855,10 +1899,35 @@ event_base_start_iocp_(struct event_base* base, int n_cpus)
 static int extension_fns_initialized = 0;
 static struct win32_extension_fns the_extension_fns;
 
+static void*
+get_extension_function(SOCKET s, const GUID* which_fn)
+{
+	void* ptr = NULL;
+	DWORD bytes = 0;
+	WSAIoctl(s, SIO_GET_EXTENSION_FUNCTION_POINTER,
+		(GUID*)which_fn, sizeof(*which_fn),
+		&ptr, sizeof(ptr),
+		&bytes, NULL, NULL);
+
+	return ptr;
+}
+
 static void
 init_extension_functions(struct win32_extension_fns* ext)
 {
+	const GUID acceptex = WSAID_ACCEPTEX;
+	const GUID connectex = WSAID_CONNECTEX;
+	const GUID getacceptexsockaddrs = WSAID_GETACCEPTEXSOCKADDRS;
+	SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
+	if (s == INVALID_SOCKET)
+		return;
+	ext->AcceptEx = get_extension_function(s, &acceptex);
+	ext->ConnectEx = get_extension_function(s, &connectex);
+	ext->GetAcceptExSockaddrs = get_extension_function(s,
+		&getacceptexsockaddrs);
+	closesocket(s);
 
+	extension_fns_initialized = 1;
 }
 
 static void
@@ -1919,4 +1988,11 @@ err:
 	free(port);
 	return NULL;
 }
+
+const struct win32_extension_fns*
+event_get_win32_extension_fns_(void)
+{
+	return &the_extension_fns;
+}
+
 #endif

@@ -131,6 +131,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="base.c" />
+    <ClCompile Include="listener.c" />
     <ClCompile Include="win32select.c" />
   </ItemGroup>
   <ItemGroup>

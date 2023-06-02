@@ -26,18 +26,21 @@ struct eventop win32ops = {
 };
 
 struct win_fd_set {
+	/** 当前大小 */
 	unsigned int fd_count;
 	SOCKET fd_array[1];
 };
 
 struct win32op {
+	/** 集合容量 */
 	unsigned num_fds_in_fd_sets;
-	int resize_out_sets;
+	/** fd读集合 */
 	struct win_fd_set* readset_in;
 	struct win_fd_set* writeset_in;
 	struct win_fd_set* readset_out;
-	struct win_fd_set* writeset_out;
 	struct win_fd_set* exset_out;
+	struct win_fd_set* writeset_out;
+	int resize_out_sets;
 	unsigned signals_are_broken : 1;
 };
 
@@ -89,6 +92,47 @@ err:
 	return (NULL);
 }
 
+static int
+grow_fd_sets(struct win32op* op, unsigned new_num_fds)
+{
+	size_t size;
+
+	size = FD_SET_ALLOC_SIZE(new_num_fds);
+	if (!(op->readset_in = realloc(op->readset_in, size)))
+		return (-1);
+	if (!(op->writeset_in = realloc(op->writeset_in, size)))
+		return (-1);
+	op->resize_out_sets = 1;
+	op->num_fds_in_fd_sets = new_num_fds;
+	return (0);
+}
+
+static int
+do_fd_set(struct win32op* op, struct idx_info* ent, evutil_socket_t s, int read)
+{
+	struct win_fd_set* set = read ? op->readset_in : op->writeset_in;
+	if (read) {
+		if (ent->read_pos_plus1 > 0)
+			return (0);
+	}
+	else {
+		if (ent->write_pos_plus1 > 0)
+			return (0);
+	}
+	if (set->fd_count == op->num_fds_in_fd_sets) {
+		if (grow_fd_sets(op, op->num_fds_in_fd_sets * 2))
+			return (-1);
+		/** 因为重新分配了内存 */
+		set = read ? op->readset_in : op->writeset_in;
+	}
+	set->fd_array[set->fd_count] = s;
+	if (read)
+		ent->read_pos_plus1 = set->fd_count + 1;
+	else
+		ent->write_pos_plus1 = set->fd_count + 1;
+	return (set->fd_count++);
+}
+
 int
 win32_add(struct event_base* base, evutil_socket_t fd,
 	short old, short events, void* idx_)
@@ -96,10 +140,18 @@ win32_add(struct event_base* base, evutil_socket_t fd,
 	struct win32op* win32op = base->evbase;
 	if ((events & EV_SIGNAL) && win32op->signals_are_broken)
 		return (-1);
-
 	if (!(events & (EV_READ | EV_WRITE)))
 		return (0);
-
+	
+	struct idx_info* idx = idx_;
+	if (events & EV_READ) {
+		if (do_fd_set(win32op, idx, fd, 1) < 0)
+			return (-1);
+	}
+	if (events & EV_WRITE) {
+		if (do_fd_set(win32op, idx, fd, 0) < 0)
+			return (-1);
+	}
 	return 0;
 }
 
@@ -157,38 +209,38 @@ win32_dispatch(struct event_base* base, struct timeval* tv)
 		return res;
 	}
 
-	//unsigned j, i;
-	//SOCKET s;
-	//if (win32op->readset_out->fd_count) {
-	//	i = evutil_weakrand_range_(&base->weakrand_seed,
-	//		win32op->readset_out->fd_count);
-	//	for (j = 0; j < win32op->readset_out->fd_count; ++j) {
-	//		if (++i >= win32op->readset_out->fd_count)
-	//			i = 0;
-	//		s = win32op->readset_out->fd_array[i];
-	//		evmap_io_active_(base, s, EV_READ);
-	//	}
-	//}
-	//if (win32op->exset_out->fd_count) {
-	//	i = evutil_weakrand_range_(&base->weakrand_seed,
-	//		win32op->exset_out->fd_count);
-	//	for (j = 0; j < win32op->exset_out->fd_count; ++j) {
-	//		if (++i >= win32op->exset_out->fd_count)
-	//			i = 0;
-	//		s = win32op->exset_out->fd_array[i];
-	//		evmap_io_active_(base, s, EV_WRITE);
-	//	}
-	//}
-	//if (win32op->writeset_out->fd_count) {
-	//	i = evutil_weakrand_range_(&base->weakrand_seed,
-	//		win32op->writeset_out->fd_count);
-	//	for (j = 0; j < win32op->writeset_out->fd_count; ++j) {
-	//		if (++i >= win32op->writeset_out->fd_count)
-	//			i = 0;
-	//		s = win32op->writeset_out->fd_array[i];
-	//		evmap_io_active_(base, s, EV_WRITE);
-	//	}
-	//}
+	unsigned j, i;
+	SOCKET s;
+	if (win32op->readset_out->fd_count) {
+		i = evutil_weakrand_range_(&base->weakrand_seed,
+			win32op->readset_out->fd_count);
+		for (j = 0; j < win32op->readset_out->fd_count; ++j) {
+			if (++i >= win32op->readset_out->fd_count)
+				i = 0;
+			s = win32op->readset_out->fd_array[i];
+			evmap_io_active_(base, s, EV_READ);
+		}
+	}
+	if (win32op->exset_out->fd_count) {
+		i = evutil_weakrand_range_(&base->weakrand_seed,
+			win32op->exset_out->fd_count);
+		for (j = 0; j < win32op->exset_out->fd_count; ++j) {
+			if (++i >= win32op->exset_out->fd_count)
+				i = 0;
+			s = win32op->exset_out->fd_array[i];
+			evmap_io_active_(base, s, EV_WRITE);
+		}
+	}
+	if (win32op->writeset_out->fd_count) {
+		i = evutil_weakrand_range_(&base->weakrand_seed,
+			win32op->writeset_out->fd_count);
+		for (j = 0; j < win32op->writeset_out->fd_count; ++j) {
+			if (++i >= win32op->writeset_out->fd_count)
+				i = 0;
+			s = win32op->writeset_out->fd_array[i];
+			evmap_io_active_(base, s, EV_WRITE);
+		}
+	}
 	return 0;
 }
 

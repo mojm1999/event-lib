@@ -338,6 +338,12 @@ struct event {
 #define ev_io_timeout	ev_.ev_io.ev_timeout
 #define ev_signal_next	ev_.ev_signal.ev_signal_next
 
+inline evutil_socket_t
+event_get_fd(const struct event* ev)	{ return ev->ev_fd; }
+
+inline struct event_base*
+event_get_base(const struct event* ev)	{ return ev->ev_base; }
+
 LIST_HEAD(event_dlist, event);
 TAILQ_HEAD(event_list, event);
 
@@ -370,15 +376,16 @@ int evsig_init_(struct event_base *);
 
 void evsig_set_base_(struct event_base* base);
 
+struct evmap_signal {
+	struct event_dlist events;
+};
+
 struct evmap_io {
 	struct event_dlist events;
+	/** 读事件数量 */
 	uint16_t nread;
 	uint16_t nwrite;
 	uint16_t nclose;
-};
-
-struct evmap_signal {
-	struct event_dlist events;
 };
 
 struct event_map_entry {
@@ -399,6 +406,9 @@ int evmap_io_add_(struct event_base *base, evutil_socket_t fd, struct event *ev)
 
 /** 删除IO */
 int evmap_io_del_(struct event_base* base, evutil_socket_t fd, struct event* ev);
+
+/** 激活IO */
+void evmap_io_active_(struct event_base* base, evutil_socket_t fd, short events);
 
 struct event_signal_map {
 	void **entries;
@@ -480,6 +490,13 @@ struct event_iocp_port {
 	short n_live_threads;
 	HANDLE *shutdownSemaphore;
 };
+
+typedef void (*iocp_callback)(struct event_overlapped*, uintptr_t, ev_ssize_t, int success);
+
+struct event_overlapped {
+	OVERLAPPED overlapped;
+	iocp_callback cb;
+};
 #endif
 
 #include <minheap.h>
@@ -489,12 +506,14 @@ struct event_iocp_port {
 #define EVLOOP_NO_EXIT_ON_EMPTY 0x04
 
 #define EVENT_DEL_NOBLOCK 0
+#define EVENT_DEL_AUTOBLOCK 2
+
 #define EVENT_DEL_EVEN_IF_FINALIZING 3
 
 struct event_base {
-	/** IO多路复用方式 */
+	/** 后端管理接口 */
 	const struct eventop *evsel;
-	/** eventop的自定义数据 */
+	/** win32op数据 */
 	void *evbase;
 	/** 定时器对象 */
 	struct evutil_monotonic_timer monotonic_timer;
@@ -606,8 +625,14 @@ int event_add_nolock_(struct event* ev, const struct timeval* tv, int tv_is_abso
 /** 循环处理事件 */
 int event_dispatch(void);
 
+/** 带参处理 */
+int event_base_dispatch(struct event_base*);
+
 /** 等待事件变为活动状态，然后运行它们的回调 */
 int event_base_loop(struct event_base*, int);
+
+/** EVENT_DEL_AUTOBLOCK删除 */
+int event_del(struct event*);
 
 /** 删除事件 */
 int event_del_nolock_(struct event* ev, int blocking);
@@ -636,13 +661,48 @@ int evutil_closesocket(evutil_socket_t sock);
 
 uint32_t evutil_weakrand_seed_(struct evutil_weakrand_state* state, uint32_t seed);
 
+int32_t evutil_weakrand_range_(struct evutil_weakrand_state* seed, int32_t top);
+
+
+#define EVUTIL_SOCK_NONBLOCK	0x4000000
+
+#define LEV_OPT_LEAVE_SOCKETS_BLOCKING	(1u<<0)
+#define LEV_OPT_CLOSE_ON_FREE		(1u<<1)
+#define LEV_OPT_DISABLED			(1u<<5)
+
+/** socket回调 */
+typedef void (*evconnlistener_cb)(struct evconnlistener*, evutil_socket_t, struct sockaddr*, int socklen, void*);
+
+typedef void (*evconnlistener_errorcb)(struct evconnlistener*, void*);
+
+/** 创建socket */
+evutil_socket_t evutil_socket_(int domain, int type, int protocol);
+
+/** 建立连接 */
+evutil_socket_t evutil_accept4_(evutil_socket_t sockfd, struct sockaddr* addr,
+	int* addrlen, int flags);
+
+struct evconnlistener* evconnlistener_new_bind(struct event_base* base,
+	evconnlistener_cb cb, void* ptr, unsigned flags, int backlog,
+	const struct sockaddr* sa, int socklen);
+
+struct evconnlistener* evconnlistener_new(struct event_base* base,
+	evconnlistener_cb cb, void* ptr, unsigned flags, int backlog,
+	evutil_socket_t fd);
+
+int evconnlistener_enable(struct evconnlistener* lev);
+
 #ifdef _WIN32
 HMODULE evutil_load_windows_system_library_(const TCHAR *library_name);
-
 
 int event_base_start_iocp_(struct event_base *base, int n_cpus);
 
 struct event_iocp_port *event_iocp_port_launch_(int n_cpus);
+
+const struct win32_extension_fns* event_get_win32_extension_fns_(void);
+
+int event_iocp_port_associate_(struct event_iocp_port* port, evutil_socket_t fd,
+	uintptr_t key);
 #endif
 
 #ifdef __cplusplus
