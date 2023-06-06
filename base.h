@@ -9,6 +9,7 @@ extern "C" {
 #include <stdint.h>
 #include <winsock2.h>
 #include <hashtable.h>
+#include <signal.h>
 
 #ifdef _WIN32
 #define evutil_socket_t intptr_t
@@ -350,13 +351,17 @@ TAILQ_HEAD(event_list, event);
 typedef void (*ev_sighandler_t)(int);
 
 struct evsig_info {
+	/** 读事件 */
 	struct event ev_signal;
+	/** 读写fd */
 	evutil_socket_t ev_signal_pair[2];
 	int ev_signal_added;
+	/** 事件数量 */
 	int ev_n_signals_added;
 #ifdef EVENT__HAVE_SIGACTION
 	struct sigaction **sh_old;
 #else
+	/** 信号回调函数数组 */
 	ev_sighandler_t **sh_old;
 #endif
 	int sh_old_max;
@@ -375,6 +380,12 @@ struct evsig_info {
 int evsig_init_(struct event_base *);
 
 void evsig_set_base_(struct event_base* base);
+
+int evsig_set_handler_(struct event_base* base, int evsignal,
+	void (*fn)(int));
+
+#define evsignal_new(b, x, cb, arg)				\
+	event_new((b), (x), EV_SIGNAL|EV_PERSIST, (cb), (arg))
 
 struct evmap_signal {
 	struct event_dlist events;
@@ -531,7 +542,7 @@ struct event_base {
 	struct event_io_map io;
 	/** 数组管理信号 */
 	struct event_signal_map sigmap;
-	/** 信号多路复用 */
+	/** 信号多路复用接口 */
 	const struct eventop *evsigsel;
 	/** 256条超时时长的队列 */
 	struct common_timeout_list **common_timeout_queues;
@@ -543,6 +554,8 @@ struct event_base {
 	int event_count_active_max;
 	/** 是否运行loop函数 */
 	int running_loop;
+	/** 完成处理后终止循环 */
+	int event_gotterm;
 	/** 通知主线程挂起 */
 	int is_notify_pending;
 	/** 唤醒函数 */
@@ -556,7 +569,6 @@ struct event_base {
 	struct event_changelist changelist;
 	int virtual_event_count;
 	int virtual_event_count_max;
-	int event_gotterm;
 	int event_break;
 	int event_continue;
 	/** 正在处理的队列 */
@@ -577,25 +589,26 @@ struct event_base {
 	evutil_socket_t th_notify_fd[2];
 	struct event th_notify;
 	struct evutil_weakrand_state weakrand_seed;
+	/** 一次性事件链表 */
 	LIST_HEAD(once_event_list, event_once) once_events;
 };
 
-/** 创建一个event_base对象，并返回指向其的指针 */
+/** 带配置的base */
 struct event_base *event_base_new(void);
 
-/** 创建全局唯一event_base对象 */
+/** 没有配置的base */
 struct event_base* event_init(void);
 
-/** 创建一个event_config对象，其可以改变event_base的行为 */
+/** 申请event_config对象，该配置可以避免某些事件通知机制 */
 struct event_config *event_config_new(void);
 
 /** 销毁event_config对象 */
 void event_config_free(struct event_config* cfg);
 
-/** 使用event_config初始化event_base，该配置可以避免某些事件通知机制 */
+/** 申请event_base */
 struct event_base *event_base_new_with_config(const struct event_config *);
 
-/** 销毁event_base对象 */
+/** 释放event_base */
 void event_base_free(struct event_base *);
 
 /** 给event_base配置定时器对象 */
@@ -616,6 +629,9 @@ typedef void (*event_callback_fn)(evutil_socket_t, short, void *);
 /** 初始化事件 */
 int event_assign(struct event*, struct event_base*, evutil_socket_t, short, event_callback_fn, void*);
 
+/** 申请内存并初始化事件 */
+struct event* event_new(struct event_base*, evutil_socket_t, short, event_callback_fn, void*);
+
 /** 加入事件 */
 int event_add(struct event* ev, const struct timeval* timeout);
 
@@ -631,11 +647,20 @@ int event_base_dispatch(struct event_base*);
 /** 等待事件变为活动状态，然后运行它们的回调 */
 int event_base_loop(struct event_base*, int);
 
+/** 循环退出 */
+int event_base_loopexit(struct event_base*, const struct timeval*);
+
+/** 一次性事件 */
+int event_base_once(struct event_base*, evutil_socket_t, short, event_callback_fn, void*, const struct timeval*);
+
 /** EVENT_DEL_AUTOBLOCK删除 */
 int event_del(struct event*);
 
 /** 删除事件 */
 int event_del_nolock_(struct event* ev, int blocking);
+
+/** 释放事件 **/
+void event_free(struct event*);
 
 /** 转活跃事件 */
 void event_active_nolock_(struct event* ev, int res, short count);
@@ -691,6 +716,8 @@ struct evconnlistener* evconnlistener_new(struct event_base* base,
 	evutil_socket_t fd);
 
 int evconnlistener_enable(struct evconnlistener* lev);
+
+void evconnlistener_free(struct evconnlistener* lev);
 
 #ifdef _WIN32
 HMODULE evutil_load_windows_system_library_(const TCHAR *library_name);

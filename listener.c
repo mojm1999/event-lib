@@ -292,6 +292,11 @@ listener_read_cb(evutil_socket_t fd, short what, void* p)
 		++lev->refcnt;
 		cb(lev, new_fd, (struct sockaddr*)&ss, (int)socklen,
 			user_data);
+		if (lev->refcnt == 1) {
+			listener_decref_and_unlock(lev);
+			return;
+		}
+		--lev->refcnt;
 	}
 }
 
@@ -337,6 +342,30 @@ evconnlistener_new(struct event_base *base,
 	    evconnlistener_enable(&lev->base);
 
 	return &lev->base;
+}
+
+static int
+listener_decref_and_unlock(struct evconnlistener* listener)
+{
+	int refcnt = --listener->refcnt;
+	if (refcnt == 0) {
+		listener->ops->destroy(listener);
+		free(listener);
+		return 1;
+	}
+	else {
+		return 0;
+	}
+}
+
+void
+evconnlistener_free(struct evconnlistener* lev)
+{
+	lev->cb = NULL;
+	lev->errorcb = NULL;
+	if (lev->ops->shutdown)
+		lev->ops->shutdown(lev);
+	listener_decref_and_unlock(lev);
 }
 
 static int

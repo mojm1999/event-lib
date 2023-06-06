@@ -360,7 +360,7 @@ evmap_io_add_(struct event_base *base, evutil_socket_t fd, struct event *ev)
 
 	struct event_io_map* io = &base->io;
 	const struct eventop* evsel = base->evsel;
-	/** 找到哈希位置然后构造 */
+	/** 找到哈希找位置，构造IO事件 */
 	GET_IO_SLOT_AND_CTOR(ctx, io, fd, evmap_io, evmap_io_init,
 		evsel->fdinfo_len);
 
@@ -534,16 +534,19 @@ evmap_signal_add_(struct event_base* base, int sig, struct event* ev)
 		return -1;
 
 	struct event_signal_map* map = &base->sigmap;
+	/** 信号值对应数组索引 */
 	if (sig >= map->nentries) {
 		if (evmap_make_space(map, sig, sizeof(struct evmap_signal*)) == -1)
 			return -1;
 	}
 
 	struct evmap_signal* ctx = NULL;
+	/** 对应数组位置上构造节点 */
 	GET_SIGNAL_SLOT_AND_CTOR(ctx, map, sig, evmap_signal, evmap_signal_init,
 		base->evsigsel->fdinfo_len);
 
 	const struct eventop* evsel = base->evsigsel;
+	/** 第一次注册该信号事件，调用IO多路复用 */
 	if (LIST_EMPTY(&ctx->events)) {
 		if (evsel->add(base, ev->ev_fd, 0, EV_SIGNAL, NULL) == -1)
 			return -1;
@@ -757,6 +760,12 @@ err:
 	return (r);
 }
 
+static struct event_base* evsig_base = NULL;
+/** 信号事件数量 */
+static int evsig_base_n_signals_added = 0;
+/** 写fd */
+static evutil_socket_t evsig_base_fd = -1;
+
 static int evsig_add(struct event_base*, evutil_socket_t, short, short, void*);
 static int evsig_del(struct event_base*, evutil_socket_t, short, short, void*);
 
@@ -770,10 +779,76 @@ static const struct eventop evsigops = {
 	0, 0, 0
 };
 
+static void __cdecl
+evsig_handler(int sig)
+{
+	if (evsig_base == NULL) {
+		return ;
+	}
+	signal(sig, evsig_handler);
+	uint8_t msg = sig;
+	send(evsig_base_fd, (char*)&msg, 1, 0);
+}
+
+int
+evsig_set_handler_(struct event_base* base,
+	int evsignal, void(__cdecl* handler)(int))
+{
+	struct evsig_info* sig = &base->sig;
+	void* p;
+	if (evsignal >= sig->sh_old_max) {
+		int new_max = evsignal + 1;
+		p = realloc(sig->sh_old, new_max * sizeof(*sig->sh_old));
+		if (p == NULL) {
+			return (-1);
+		}
+		memset((char*)p + sig->sh_old_max * sizeof(*sig->sh_old),
+			0, (new_max - sig->sh_old_max) * sizeof(*sig->sh_old));
+		sig->sh_old_max = new_max;
+		sig->sh_old = p;
+	}
+
+	sig->sh_old[evsignal] = malloc(sizeof *sig->sh_old[evsignal]);
+	if (sig->sh_old[evsignal] == NULL) {
+		return (-1);
+	}
+
+	ev_sighandler_t sh;
+	if ((sh = signal(evsignal, handler)) == SIG_ERR) {
+		free(sig->sh_old[evsignal]);
+		sig->sh_old[evsignal] = NULL;
+		return (-1);
+	}
+	*sig->sh_old[evsignal] = sh;
+
+	return (0);
+}
+
 static int
 evsig_add(struct event_base* base, evutil_socket_t evsignal, short old, short events, void* p)
 {
-	return 0;
+	if (evsignal < 0 || evsignal >= NSIG) {
+		goto err;
+	}
+	evsig_base = base;
+	struct evsig_info* sig = &base->sig;
+	evsig_base_n_signals_added = ++sig->ev_n_signals_added;
+	evsig_base_fd = base->sig.ev_signal_pair[1];
+	if (evsig_set_handler_(base, (int)evsignal, evsig_handler) == -1) {
+		goto err;
+	}
+	/** 初次绑定信号，将读fd加入IO队列 */
+	if (!sig->ev_signal_added) {
+		if (event_add_nolock_(&sig->ev_signal, NULL, 0))
+			goto err;
+		sig->ev_signal_added = 1;
+	}
+	return (0);
+
+err:
+	--evsig_base_n_signals_added;
+	--sig->ev_n_signals_added;
+	return (-1);
 }
 
 static int
@@ -836,10 +911,6 @@ evsig_init_(struct event_base* base)
 	base->evsigsel = &evsigops;
 	return 0;
 }
-
-static struct event_base* evsig_base = NULL;
-static int evsig_base_n_signals_added = 0;
-static evutil_socket_t evsig_base_fd = -1;
 
 void
 evsig_set_base_(struct event_base* base)
@@ -939,6 +1010,20 @@ event_assign(struct event* ev, struct event_base* base, evutil_socket_t fd, shor
 	}
 
 	return  0;
+}
+
+struct event *
+event_new(struct event_base *base, evutil_socket_t fd, short events, void (*cb)(evutil_socket_t, short, void *), void *arg)
+{
+	struct event *ev = malloc(sizeof(struct event));
+	if (ev == NULL)
+		return (NULL);
+	if (event_assign(ev, base, fd, events, cb, arg) < 0) {
+		free(ev);
+		return (NULL);
+	}
+
+	return (ev);
 }
 
 int
@@ -1402,6 +1487,13 @@ event_del_nolock_(struct event* ev, int blocking)
 	return res;
 }
 
+void
+event_free(struct event* ev)
+{
+	event_del(ev);
+	free(ev);
+}
+
 static inline struct event*
 event_callback_to_event(struct event_callback* evcb)
 {
@@ -1609,6 +1701,7 @@ event_process_active(struct event_base* base)
 			if (c < 0) {
 				goto done;
 			}
+			/** 真实事件要跳出 */
 			else if (c > 0)
 				break;
 		}
@@ -1686,6 +1779,79 @@ done:
 	base->running_loop = 0;
 
 	return retval;
+}
+
+static void
+event_loopexit_cb(evutil_socket_t fd, short what, void* arg)
+{
+	struct event_base* base = arg;
+	base->event_gotterm = 1;
+}
+
+int
+event_base_loopexit(struct event_base* event_base, const struct timeval* tv)
+{
+	return (event_base_once(event_base, -1, EV_TIMEOUT, event_loopexit_cb,
+		event_base, tv));
+}
+
+static void
+event_once_cb(evutil_socket_t fd, short events, void* arg)
+{
+	struct event_once* eonce = arg;
+	(*eonce->cb)(fd, events, eonce->arg);
+	LIST_REMOVE(eonce, next_once);
+	free(eonce);
+}
+
+int
+event_base_once(struct event_base* base, evutil_socket_t fd, short events,
+	void (*callback)(evutil_socket_t, short, void*),
+	void* arg, const struct timeval* tv)
+{
+	if (!base)
+		return (-1);
+	if (events & (EV_SIGNAL | EV_PERSIST))
+		return (-1);
+	/** 申请单次事件 */
+	struct event_once* eonce = calloc(1, sizeof(struct event_once));
+	if (eonce == NULL)
+		return (-1);
+
+	eonce->cb = callback;
+	eonce->arg = arg;
+
+	int activate = 0;
+	if ((events & (EV_TIMEOUT | EV_SIGNAL | EV_READ | EV_WRITE | EV_CLOSED)) == EV_TIMEOUT) {
+		evtimer_assign(&eonce->ev, base, event_once_cb, eonce);
+		if (tv == NULL || ! timerisset(tv)) {
+			activate = 1;
+		}
+	}
+	else if (events & (EV_READ | EV_WRITE | EV_CLOSED)) {
+		events &= EV_READ | EV_WRITE | EV_CLOSED;
+		event_assign(&eonce->ev, base, fd, events, event_once_cb, eonce);
+	}
+	else {
+		free(eonce);
+		return (-1);
+	}
+
+	int res = 0;
+	if (activate)
+		event_active_nolock_(&eonce->ev, EV_TIMEOUT, 1);
+	else
+		res = event_add_nolock_(&eonce->ev, tv, 0);
+
+	if (res != 0) {
+		free(eonce);
+		return (res);
+	}
+	else {
+		LIST_INSERT_HEAD(&base->once_events, eonce, next_once);
+	}
+
+	return (0);
 }
 
 int
