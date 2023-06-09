@@ -131,11 +131,13 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="base.c" />
+    <ClCompile Include="buffer_sock.c" />
     <ClCompile Include="listener.c" />
     <ClCompile Include="win32select.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="base.h" />
+    <ClInclude Include="buffer_event.h" />
     <ClInclude Include="hashtable.h" />
     <ClInclude Include="minheap.h" />
   </ItemGroup>

@@ -476,6 +476,17 @@ evmap_io_active_(struct event_base* base, evutil_socket_t fd, short events)
 	}
 }
 
+void *
+evmap_io_get_fdinfo_(struct event_io_map *map, evutil_socket_t fd)
+{
+	struct evmap_io *ctx;
+	GET_IO_SLOT(ctx, map, fd, evmap_io);
+	if (ctx)
+		return ((char*)ctx) + sizeof(struct evmap_io);
+	else
+		return NULL;
+}
+
 static int
 evmap_make_space(struct event_signal_map* map, int slot, int msize)
 {
@@ -1852,6 +1863,75 @@ event_base_once(struct event_base* base, evutil_socket_t fd, short events,
 	}
 
 	return (0);
+}
+
+int
+event_base_loopbreak(struct event_base* event_base)
+{
+	if (event_base == NULL)
+		return (-1);
+	event_base->event_break = 1;
+	return 0;
+}
+
+void
+event_deferred_cb_init_(struct event_callback* cb, uint8_t priority, deferred_cb_fn fn, void* arg)
+{
+	memset(cb, 0, sizeof(*cb));
+	cb->evcb_cb_union.evcb_selfcb = fn;
+	cb->evcb_arg = arg;
+	cb->evcb_pri = priority;
+	cb->evcb_closure = EV_CLOSURE_CB_SELF;
+}
+
+int
+event_callback_cancel_nolock_(struct event_base *base,
+    struct event_callback *evcb, int even_if_finalizing)
+{
+	if ((evcb->evcb_flags & EVLIST_FINALIZING) && !even_if_finalizing)
+		return 0;
+
+	if (evcb->evcb_flags & EVLIST_INIT)
+		return event_del_nolock_(event_callback_to_event(evcb),
+		    even_if_finalizing ? EVENT_DEL_EVEN_IF_FINALIZING : EVENT_DEL_AUTOBLOCK);
+
+	switch ((evcb->evcb_flags & (EVLIST_ACTIVE|EVLIST_ACTIVE_LATER))) {
+	default:
+	case EVLIST_ACTIVE|EVLIST_ACTIVE_LATER:
+		break;
+	case EVLIST_ACTIVE:
+		event_queue_remove_active(base, evcb);
+		return 0;
+	case EVLIST_ACTIVE_LATER:
+		event_queue_remove_active_later(base, evcb);
+		break;
+	case 0:
+		break;
+	}
+
+	return 0;
+}
+
+int
+event_pending(const struct event* ev, short event, struct timeval* tv)
+{
+	int flags = 0;
+
+	if (ev->ev_flags & EVLIST_INSERTED)
+		flags |= (ev->ev_events & (EV_READ | EV_WRITE | EV_CLOSED | EV_SIGNAL));
+	if (ev->ev_flags & (EVLIST_ACTIVE | EVLIST_ACTIVE_LATER))
+		flags |= ev->ev_res;
+	if (ev->ev_flags & EVLIST_TIMEOUT)
+		flags |= EV_TIMEOUT;
+
+	event &= (EV_TIMEOUT | EV_READ | EV_WRITE | EV_CLOSED | EV_SIGNAL);
+
+	if (tv != NULL && (flags & event & EV_TIMEOUT)) {
+		struct timeval tmp = ev->ev_timeout;
+		tmp.tv_usec &= MICROSECONDS_MASK;
+		evutil_timeradd(&ev->ev_base->tv_clock_diff, &tmp, tv);
+	}
+	return (flags & event);
 }
 
 int

@@ -374,7 +374,7 @@ struct evsig_info {
 
 #define EV_PERSIST	0x10
 #define EV_ET		0x20
-
+#define EV_FINALIZE 0x40
 #define EV_CLOSED	0x80
 
 int evsig_init_(struct event_base *);
@@ -420,6 +420,8 @@ int evmap_io_del_(struct event_base* base, evutil_socket_t fd, struct event* ev)
 
 /** 激活IO */
 void evmap_io_active_(struct event_base* base, evutil_socket_t fd, short events);
+
+void *evmap_io_get_fdinfo_(struct event_io_map *ctx, evutil_socket_t fd);
 
 struct event_signal_map {
 	void **entries;
@@ -532,7 +534,7 @@ struct event_base {
 	time_t last_updated_clock_diff;
 	/** 系统日期时间相差 */
 	struct timeval tv_clock_diff;
-	/** 活跃队列数组 */
+	/** 激活队列数组 */
 	struct evcallback_list *activequeues;
 	/** 队列数量 */
 	int nactivequeues;
@@ -671,6 +673,20 @@ int event_callback_activate_nolock_(struct event_base*, struct event_callback*);
 /** 若有相同的超时时长，加上标记 */
 const struct timeval* event_base_init_common_timeout(struct event_base* base,
 	const struct timeval* duration);
+
+/** 跳出循环 */
+int event_base_loopbreak(struct event_base*);
+
+typedef void (*deferred_cb_fn)(struct event_callback*, void*);
+
+/** 延迟回调函数初始化 */
+void event_deferred_cb_init_(struct event_callback*, uint8_t, deferred_cb_fn, void*);
+
+int event_callback_cancel_nolock_(struct event_base* base,
+	struct event_callback* evcb, int even_if_finalizing);
+
+int event_pending(const struct event* ev, short events, struct timeval* tv);
+
 
 int evutil_make_internal_pipe_(evutil_socket_t fd[2]);
 

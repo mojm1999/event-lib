@@ -155,11 +155,48 @@ win32_add(struct event_base* base, evutil_socket_t fd,
 	return 0;
 }
 
+static int
+do_fd_clear(struct event_base *base,
+			struct win32op *op, struct idx_info *ent, int read)
+{
+	int i;
+	struct win_fd_set *set = read ? op->readset_in : op->writeset_in;
+	if (read) {
+		i = ent->read_pos_plus1 - 1;
+		ent->read_pos_plus1 = 0;
+	} else {
+		i = ent->write_pos_plus1 - 1;
+		ent->write_pos_plus1 = 0;
+	}
+	if (i < 0)
+		return (0);
+	if (--set->fd_count != (unsigned)i) {
+		SOCKET s2;
+		s2 = set->fd_array[i] = set->fd_array[set->fd_count];
+
+		struct idx_info *ent2;
+		ent2 = evmap_io_get_fdinfo_(&base->io, s2);
+
+		if (!ent2) /* This indicates a bug. */
+			return (0);
+		if (read)
+			ent2->read_pos_plus1 = i+1;
+		else
+			ent2->write_pos_plus1 = i+1;
+	}
+	return (0);
+}
+
 int
 win32_del(struct event_base* base, evutil_socket_t fd, short old, short events,
 	void* idx_)
 {
-
+	struct win32op *win32op = base->evbase;
+	struct idx_info *idx = idx_;
+	if (events & EV_READ)
+		do_fd_clear(base, win32op, idx, 1);
+	if (events & EV_WRITE)
+		do_fd_clear(base, win32op, idx, 0);
 	return 0;
 }
 

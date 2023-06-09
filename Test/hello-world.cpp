@@ -1,11 +1,29 @@
 #include <iostream>
 #include <base.h>
+#include <buffer_event.h>
 
 #define cout std::cout
 #define endl std::endl
 
 static const int PORT = 9995;
 static const char IP[] = "127.0.0.1";
+
+static const char MESSAGE[] = "Hello, World!\n";
+
+static void
+conn_writecb(struct bufferevent* bev, void* user_data)
+{
+	if (evbuffer_get_length(bev->output) == 0) {
+		cout << "flushed answer" << endl;
+		bufferevent_free(bev);
+	}
+}
+
+static void
+conn_eventcb(struct bufferevent* bev, short events, void* user_data)
+{
+
+}
 
 static void
 listener_cb(struct evconnlistener* listener, evutil_socket_t fd,
@@ -14,8 +32,17 @@ listener_cb(struct evconnlistener* listener, evutil_socket_t fd,
 	cout << "Create an connect" << endl;
 
 	struct event_base* base = (event_base*)user_data;
-	//bev = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE);
+	struct bufferevent* bev = bufferevent_socket_new(base, fd, BEV_OPT_CLOSE_ON_FREE);
+	if (!bev) {
+		cout << "Error constructing bufferevent!" << endl;
+		event_base_loopbreak(base);
+		return;
+	}
+	bufferevent_setcb(bev, NULL, conn_writecb, conn_eventcb, NULL);
+	bufferevent_enable(bev, EV_WRITE);
+	bufferevent_disable(bev, EV_READ);
 
+	bufferevent_write(bev, MESSAGE, strlen(MESSAGE));
 }
 
 static void
@@ -62,5 +89,6 @@ hello_main()
 	event_free(signal_event);
 	event_base_free(base);
 	cout << "done" << endl;
+
 	return 0;
 }
